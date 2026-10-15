@@ -1,0 +1,21 @@
+# MinIO bucket directory on the PVC      Scaleway bucket suffix
+# Destination bucket = <BUCKET_PREFIX>-<suffix>  (BUCKET_PREFIX is set in the env file)
+# Lines starting with # are ignored. Directories not listed here are skipped.
+# Run "inspect" first: it shows which directories exist and which are not mapped.
+#
+# source                          suffix
+# registry                          registry
+git-lfs                           lfs
+gitlab-uploads                    uploads
+gitlab-artifacts                  artifacts
+gitlab-packages                   packages
+gitlab-mr-diffs                   mr-diffs
+# gitlab-terraform-state            terraform-state
+gitlab-ci-secure-files            ci-secure-files
+# gitlab-dependency-proxy           dependency-proxy
+gitlab-pages                      pages
+# gitlab-backups                    backups
+#
+# Intentionally not migrated:
+#   runner-cache  -> CI cache, rebuilt automatically by the runners
+#   tmp           -> temporary backup/restore area, create an empty <prefix>-tmp bucket instead
