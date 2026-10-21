@@ -38,13 +38,16 @@ KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 SCW_REGION="${SCW_REGION:-fr-par}"
 SCW_ENDPOINT="${SCW_ENDPOINT:-s3.${SCW_REGION}.scw.cloud}"
 SCW_SECRET_NAME="${SCW_SECRET_NAME:-minio-migration-scw}"
+S3_PROVIDER="${S3_PROVIDER:-Scaleway}"
+S3_STORAGE_CLASS="${S3_STORAGE_CLASS-STANDARD}"
 BUCKET_MAP="${BUCKET_MAP:-buckets.map}"
 RCLONE_IMAGE="${RCLONE_IMAGE:-rclone/rclone:1.68.2}"
-RUN_AS_UID="${RUN_AS_UID:-1000}"
+RUN_AS_UID="${RUN_AS_UID-1000}"   # empty = let the platform pick (OpenShift restricted-v2)
 TRANSFERS="${TRANSFERS:-8}"
 CREATE_BUCKETS="${CREATE_BUCKETS:-true}"
 VERIFY_FLAGS="${VERIFY_FLAGS:-}"
 NODE_NAME="${NODE_NAME:-}"
+SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-}"
 SCW_CA_CERT="${SCW_CA_CERT:-}"
 SCW_SKIP_TLS_VERIFY="${SCW_SKIP_TLS_VERIFY:-false}"
 DRY_RUN="${CLI_DRY_RUN:-${DRY_RUN:-false}}"
@@ -93,7 +96,12 @@ preflight() {
   else
     log "Node        : volume not attached, scheduler will choose"
   fi
-  log "Destination : ${BUCKET_PREFIX}-<suffix> @ $SCW_ENDPOINT ($SCW_REGION)"
+  log "Destination : ${BUCKET_PREFIX}-<suffix> @ $SCW_ENDPOINT ($SCW_REGION, provider $S3_PROVIDER)"
+  log "Run as UID  : ${RUN_AS_UID:-assigned by the platform} (service account ${SERVICE_ACCOUNT:-default})"
+  if [[ -n "$SERVICE_ACCOUNT" ]]; then
+    k get serviceaccount "$SERVICE_ACCOUNT" >/dev/null 2>&1 \
+      || die "service account $SERVICE_ACCOUNT not found in $NAMESPACE"
+  fi
   if [[ "$SCW_SKIP_TLS_VERIFY" == true ]]; then
     warn "TLS certificate verification is DISABLED for $SCW_ENDPOINT"
   elif [[ -n "$SCW_CA_CERT" ]]; then
@@ -125,8 +133,13 @@ ensure_configmap() {
 }
 
 render_job() {
-  local mode="$1" node_line="" tls_env=""
+  local mode="$1" node_line="" sa_line="" tls_env="" uid_lines="" sc_env=""
   [[ -n "$NODE_NAME" ]] && node_line="nodeName: ${NODE_NAME}"
+  # OpenShift: reuse the MinIO service account so the Job gets the same SCC (and UID)
+  [[ -n "$SERVICE_ACCOUNT" ]] && sa_line="serviceAccountName: ${SERVICE_ACCOUNT}"
+  # OpenShift SCCs reject a fixed UID outside the namespace range: leave it unset there
+  [[ -n "$RUN_AS_UID" ]] && uid_lines=$'\n'"        runAsUser: ${RUN_AS_UID}"$'\n'"        runAsGroup: ${RUN_AS_UID}"
+  [[ -n "$S3_STORAGE_CLASS" ]] && sc_env=$'\n'"            - { name: RCLONE_CONFIG_SCW_STORAGE_CLASS, value: ${S3_STORAGE_CLASS} }"
   # rclone global flags --ca-cert / --no-check-certificate, set through the environment
   [[ -n "$SCW_CA_CERT" ]] && tls_env+=$'\n            - { name: RCLONE_CA_CERT, value: /migration/ca.crt }'
   [[ "$SCW_SKIP_TLS_VERIFY" == true ]] && tls_env+=$'\n            - { name: RCLONE_NO_CHECK_CERTIFICATE, value: "true" }'
@@ -147,10 +160,9 @@ spec:
     spec:
       restartPolicy: Never
       ${node_line}
+      ${sa_line}
       securityContext:
-        runAsNonRoot: true
-        runAsUser: ${RUN_AS_UID}
-        runAsGroup: ${RUN_AS_UID}
+        runAsNonRoot: true${uid_lines}
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -167,12 +179,11 @@ spec:
             - { name: HOME, value: /tmp }
             - { name: RCLONE_CONFIG, value: /tmp/rclone.conf }
             - { name: RCLONE_CONFIG_SCW_TYPE, value: s3 }
-            - { name: RCLONE_CONFIG_SCW_PROVIDER, value: Scaleway }
+            - { name: RCLONE_CONFIG_SCW_PROVIDER, value: "${S3_PROVIDER}" }
             - { name: RCLONE_CONFIG_SCW_ENV_AUTH, value: "false" }
             - { name: RCLONE_CONFIG_SCW_REGION, value: "${SCW_REGION}" }
             - { name: RCLONE_CONFIG_SCW_ENDPOINT, value: "${SCW_ENDPOINT}" }
-            - { name: RCLONE_CONFIG_SCW_ACL, value: private }
-            - { name: RCLONE_CONFIG_SCW_STORAGE_CLASS, value: STANDARD }
+            - { name: RCLONE_CONFIG_SCW_ACL, value: private }${sc_env}
             - { name: RCLONE_CONFIG_SCW_CHUNK_SIZE, value: 32M }
             - { name: RCLONE_CONFIG_SCW_UPLOAD_CONCURRENCY, value: "2" }${tls_env}
             - name: RCLONE_CONFIG_SCW_ACCESS_KEY_ID
